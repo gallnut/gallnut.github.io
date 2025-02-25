@@ -1,3 +1,10 @@
-<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>Gallnut</title><description>Welcome!</description><link>https://gallnut.github.io/</link><language>zh_CN</language><item><title>First</title><link>https://gallnut.github.io/posts/first/</link><guid isPermaLink="true">https://gallnut.github.io/posts/first/</guid><pubDate>Tue, 25 Feb 2025 00:00:00 GMT</pubDate><content:encoded>&lt;h1&gt;First&lt;/h1&gt;
-&lt;h2&gt;Next Section&lt;/h2&gt;
+<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>Gallnut</title><description>Welcome!</description><link>https://gallnut.github.io/</link><language>zh_CN</language><item><title>操作系统学习笔记--文件系统</title><link>https://gallnut.github.io/posts/os_fs/</link><guid isPermaLink="true">https://gallnut.github.io/posts/os_fs/</guid><pubDate>Tue, 25 Feb 2025 00:00:00 GMT</pubDate><content:encoded>&lt;h1&gt;操作系统学习笔记--文件系统&lt;/h1&gt;
+&lt;h2&gt;I/O系统&lt;/h2&gt;
+&lt;p&gt;I/O系统由通用块层、I/O调度系统、驱动程序组成，通用块层是文件子系统与I/O子系统之间的接口，屏蔽具体的块设备之间的差异，为文件子系统提供一个统一的抽象视图。当文件子系统需要读取文件时，向通用块层中的抽象块设备发出I/O请求，通用块层将对抽象块设备的I/O请求转换为对具体块设备的I/O请求，将请求交给I/O调度系统去处理。I/O调度系统负责处理I/O请求，向块设备驱动程序发出具体的I/O命令，块设备驱动程序直接操控块设备硬件执行相应的I/O操作。&lt;/p&gt;
+&lt;h2&gt;Ext文件系统&lt;/h2&gt;
+&lt;p&gt;ext文件系统将FCB分为主部和次部，主部为inode,包含文件的属性信息和索引表，属性信息包含文件的类型、权限、所有者、所属组、长度、时间戳、连接数等信息，索引表表项为指向文件存储块地址的指针。FCB次部为文件名和inode编号(指针？)，文件名用于目录中的文件按名检索，inode编号用于找到文件对应的inode。&lt;/p&gt;
+&lt;h2&gt;Ext3 索引结构&lt;/h2&gt;
+&lt;p&gt;Ext3 的索引结构有15项，每项4B,总共60B,0～11项为直接索引指针，直接指向数据块，12～14项为间接索引指针，指向索引块，索引块中的指针指向数据块或指向下一级索引块。Ext3设立三级间接索引，可以表达大文件。假设存储块大小为1KB,12KB以内的文件只需要使用到直接索引指针，12KB～268KB大小的文件需要使用1级间接索引指针，更大的文件则需要使用二级间接索引和三级间接索引。大文件经过多级索引之后，存取效率会降低。&lt;/p&gt;
+&lt;h2&gt;Ext4 索引结构&lt;/h2&gt;
+&lt;p&gt;Ext4采用区段索引来描述更大的文件，文件大小可达2TB&lt;/p&gt;
 </content:encoded></item></channel></rss>
