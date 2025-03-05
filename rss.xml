@@ -1,4 +1,205 @@
-<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>Gallnut</title><description>Welcome!</description><link>https://gallnut.github.io/</link><language>zh_CN</language><item><title>操作系统学习笔记--文件系统</title><link>https://gallnut.github.io/posts/os_fs/</link><guid isPermaLink="true">https://gallnut.github.io/posts/os_fs/</guid><pubDate>Tue, 25 Feb 2025 00:00:00 GMT</pubDate><content:encoded>&lt;h1&gt;操作系统学习笔记--文件系统&lt;/h1&gt;
+<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>Gallnut</title><description>Welcome!</description><link>https://gallnut.github.io/</link><language>zh_CN</language><item><title>shared_ptr 实现</title><link>https://gallnut.github.io/posts/cc_shared_ptr/</link><guid isPermaLink="true">https://gallnut.github.io/posts/cc_shared_ptr/</guid><pubDate>Wed, 05 Mar 2025 00:00:00 GMT</pubDate><content:encoded>&lt;h1&gt;shared_ptr 实现&lt;/h1&gt;
+&lt;p&gt;标准库的std::shared_ptr&amp;lt;?&amp;gt;模板支持定义资源的构造器和释放器，这里只进行简单实现，不涉及复杂的模板技法。&lt;/p&gt;
+&lt;h2&gt;模板类定义&lt;/h2&gt;
+&lt;pre&gt;&lt;code&gt;#include &amp;lt;atomic&amp;gt;
+#include &amp;lt;cstddef&amp;gt;
+
+template &amp;lt;typename T&amp;gt;
+class shared_ptr
+{
+public:
+    shared_ptr();
+    explicit shared_ptr(T* ptr);
+
+    ~shared_ptr();
+
+    shared_ptr(const shared_ptr&amp;lt;T&amp;gt;&amp;amp; other);
+    shared_ptr&amp;lt;T&amp;gt;&amp;amp; operator=(std::nullptr_t);
+    shared_ptr&amp;lt;T&amp;gt;&amp;amp; operator=(const shared_ptr&amp;lt;T&amp;gt;&amp;amp; other);
+
+    shared_ptr(shared_ptr&amp;lt;T&amp;gt;&amp;amp;&amp;amp; other) noexcept;
+    shared_ptr&amp;lt;T&amp;gt;&amp;amp; operator=(shared_ptr&amp;lt;T&amp;gt;&amp;amp;&amp;amp; other) noexcept;
+
+    T&amp;amp; operator*() const;
+
+    std::size_t use_count() const;
+
+    bool unique() const;
+    
+    T* get() const;
+    
+    void reset(T* ptr = nullptr);
+
+private:
+    void release();
+
+private:
+    T* ptr_;
+    std::atomic&amp;lt;std::size_t&amp;gt;* ref_cnt_;
+};
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;使用泛型指针表示该智能指针维护的资源，引用计数使用指针，可以在多个智能指针对象之间共享，使用原子变量保证引用计数操作的线程安全。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;使用 std::atomic&amp;lt;std::size_t&amp;gt; * 而不是 std::atomic&amp;lt;std::size_t *&amp;gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2&gt;release 实现&lt;/h2&gt;
+&lt;pre&gt;&lt;code&gt;template &amp;lt;typename T&amp;gt;
+void shared_ptr&amp;lt;T&amp;gt;::release()
+{
+    if (ref_cnt_ &amp;amp;&amp;amp; ref_cnt_-&amp;gt;fetch_sub(1, std::memory_order_release) == 1)
+    {
+        std::atomic_thread_fence(std::memory_order_acquire);
+        delete ptr_;
+        delete ref_cnt_;
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;ref_cnt-&amp;gt;fetch_sub(1, std::memory_order_release) 使用release内存序，保证引用计数修改之前的操作对其他线程可见。只有最后一个线程在释放资源时需要对其他线程的操作可见，所以只有fetch_sub返回1时才需要设置acquire屏障，避免直接对fetch_sub设置acq_rel屏障。&lt;/p&gt;
+&lt;h2&gt;普通构造与析构&lt;/h2&gt;
+&lt;pre&gt;&lt;code&gt;template &amp;lt;typename T&amp;gt;
+shared_ptr&amp;lt;T&amp;gt;::shared_ptr()
+    : ptr_(nullptr)
+    , ref_cnt_(nullptr)
+{}
+
+template &amp;lt;typename T&amp;gt;
+shared_ptr&amp;lt;T&amp;gt;::shared_ptr(T* ptr)
+    : ptr_(ptr)
+    , ref_cnt_(ptr ? new std::atomic&amp;lt;std::size_t&amp;gt;(1) : nullptr)
+{}
+
+template &amp;lt;typename T&amp;gt;
+shared_ptr&amp;lt;T&amp;gt;::~shared_ptr()
+{
+    release();
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h2&gt;拷贝构造与拷贝赋值&lt;/h2&gt;
+&lt;pre&gt;&lt;code&gt;template &amp;lt;typename T&amp;gt;
+shared_ptr&amp;lt;T&amp;gt;::shared_ptr(const shared_ptr&amp;lt;T&amp;gt;&amp;amp; other)
+    : ptr_(other.ptr_)
+    , ref_cnt_(other.ref_cnt_)
+{
+    if (ref_cnt_)
+    {
+        ref_cnt_-&amp;gt;fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+template &amp;lt;typename T&amp;gt;
+shared_ptr&amp;lt;T&amp;gt;&amp;amp; shared_ptr&amp;lt;T&amp;gt;::operator=(std::nullptr_t)
+{
+    release();
+    ptr_ = nullptr;
+    ref_cnt_ = nullptr;
+    return *this;
+}
+
+template &amp;lt;typename T&amp;gt;
+shared_ptr&amp;lt;T&amp;gt;&amp;amp; shared_ptr&amp;lt;T&amp;gt;::operator=(const shared_ptr&amp;lt;T&amp;gt;&amp;amp; other)
+{
+    if (this != other)
+    {
+        release();
+        ptr_ = other.ptr_;
+        ref_cnt_ = other.ref_cnt_;
+        if (ref_cnt_)
+        {
+            ref_cnt_-&amp;gt;fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    return *this;
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;调用拷贝构造时，当前对象并没有管理任何资源，无需释放，调用拷贝赋值时，需要处理当前正在管理的资源的释放操作。
+引用计数的增加采用relaxed内存序，仅保证原子性，可能出现数据竞争，但不会出现撕裂现象。出现数据竞争可能导致多个线程观察到的引用计数变化顺序不一致，但这并不影响。智能指针只保证引用计数的线程安全（即当一个线程在使用资源时，另一个线程不能够释放资源），不保证资源使用的线程安全。引用计数的增加，不会导致资源释放。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;不可能出现一个线程即将释放资源，同时引用计数又增加的情况。线程即将释放资源，表示资源仅被当前线程持有，引用计数增加，只能从当前线程的对象中触发，而当前对象正在析构，是不可能被拷贝的。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2&gt;移动构造与移动赋值&lt;/h2&gt;
+&lt;pre&gt;&lt;code&gt;template &amp;lt;typename T&amp;gt;
+shared_ptr&amp;lt;T&amp;gt;::shared_ptr(shared_ptr&amp;lt;T&amp;gt;&amp;amp;&amp;amp; other) noexcept
+    : ptr_(other.ptr_)
+    , ref_cnt_(other.ref_cnt_)
+{
+    other.ptr_ = nullptr;
+    other.ref_cnt_ = nullptr;
+}
+
+template &amp;lt;typename T&amp;gt;
+shared_ptr&amp;lt;T&amp;gt;&amp;amp; shared_ptr&amp;lt;T&amp;gt;::operator=(shared_ptr&amp;lt;T&amp;gt;&amp;amp;&amp;amp; other) noexcept
+{
+    if (this != &amp;amp;other)
+    {
+        release();
+        ptr_ = other.ptr_;
+        ref_cnt_ = other.ref_cnt_;
+        other.ptr_ = nullptr;
+        other.ref_cnt_ = nullptr;
+    }
+    return *this;
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;noexcept 确保移动操作不会抛出异常。移动时不会改变引用计数，在移动赋值时需要处理之前管理的资源的释放。&lt;/p&gt;
+&lt;h2&gt;其他函数&lt;/h2&gt;
+&lt;pre&gt;&lt;code&gt;template &amp;lt;typename T&amp;gt;
+T&amp;amp; shared_ptr&amp;lt;T&amp;gt;::operator*() const
+{
+    return *ptr_;
+}
+
+template &amp;lt;typename T&amp;gt;
+std::size_t shared_ptr&amp;lt;T&amp;gt;::use_count() const
+{
+    return ref_cnt_ ? ref_cnt_-&amp;gt;load(std::memory_order_acquire) : 0;
+}
+
+template &amp;lt;typename T&amp;gt;
+bool shared_ptr&amp;lt;T&amp;gt;::unique() const
+{
+    return use_count() == 1;
+}
+
+template &amp;lt;typename T&amp;gt;
+T* shared_ptr&amp;lt;T&amp;gt;::get() const
+{
+    return ptr_;
+}
+
+template &amp;lt;typename T&amp;gt;
+void shared_ptr&amp;lt;T&amp;gt;::reset(T* ptr)
+{
+    release();
+    ptr_ = ptr;
+    ref_cnt_ = ptr ? new std::atomic&amp;lt;std::size_t&amp;gt;(1) : nullptr;
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;读取引用计数应当使用acquire内存序，因为读取引用计数一般是为了判断后续的操作是否会影响其他线程，要避免后续操作被重排到引用计数判断之前，所以使用acquire内存序，与fetch_sub的release内存序同步。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;另一种考虑是use_count使用relaxed内存序，unique使用acquire内存序。代码如下：&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;pre&gt;&lt;code&gt;template &amp;lt;typename T&amp;gt;
+class shared_ptr
+{
+// ...
+public:
+	std::size_t use_count(std::memory_order order = std::memory_order_relaxed) const;
+	bool unique() const;
+// ...  
+};
+template &amp;lt;typename T&amp;gt;
+std::size_t shared_ptr&amp;lt;T&amp;gt;::use_count(std::memory_order order) const
+{
+    return ref_cnt_ ? ref_cnt_-&amp;gt;load(order) : 0;
+}
+
+template &amp;lt;typename T&amp;gt;
+bool shared_ptr&amp;lt;T&amp;gt;::unique() const
+{
+    return use_count(std::memory_order_acquire) == 1;
+}
+&lt;/code&gt;&lt;/pre&gt;
+</content:encoded></item><item><title>操作系统学习笔记--文件系统</title><link>https://gallnut.github.io/posts/os_fs/</link><guid isPermaLink="true">https://gallnut.github.io/posts/os_fs/</guid><pubDate>Tue, 25 Feb 2025 00:00:00 GMT</pubDate><content:encoded>&lt;h1&gt;操作系统学习笔记--文件系统&lt;/h1&gt;
 &lt;h2&gt;I/O系统&lt;/h2&gt;
 &lt;p&gt;I/O系统由通用块层、I/O调度系统、驱动程序组成，通用块层是文件子系统与I/O子系统之间的接口，屏蔽具体的块设备之间的差异，为文件子系统提供一个统一的抽象视图。当文件子系统需要读取文件时，向通用块层中的抽象块设备发出I/O请求，通用块层将对抽象块设备的I/O请求转换为对具体块设备的I/O请求，将请求交给I/O调度系统去处理。I/O调度系统负责处理I/O请求，向块设备驱动程序发出具体的I/O命令，块设备驱动程序直接操控块设备硬件执行相应的I/O操作。&lt;/p&gt;
 &lt;h2&gt;Ext文件系统&lt;/h2&gt;
