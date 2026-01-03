@@ -1,34 +1,70 @@
 <?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>Gallnut</title><description>Welcome</description><link>https://gallnut.github.io/</link><language>zh_CN</language><item><title>U-统计量和V-统计量</title><link>https://gallnut.github.io/posts/statistic/</link><guid isPermaLink="true">https://gallnut.github.io/posts/statistic/</guid><pubDate>Sat, 03 Jan 2026 00:00:00 GMT</pubDate><content:encoded>&lt;h1&gt;U-统计量&lt;/h1&gt;
 &lt;h2&gt;定义&lt;/h2&gt;
 &lt;p&gt;定义 $h(x_1, \cdots, x_r): \mathbb{R}^r \rightarrow \mathbb{R}$ 为一个函数，其具有对称性，即交换任意 $x_i$, $x &lt;em&gt;j$ 的位置， $h$ 的值保持不变。对随机变量 $X_1, \cdots, X_n$, 基于 $h$ 的 U-统计量定义如下：
-$$U_n = \frac{1}{n \choose r} \sum&lt;/em&gt;{1 \le i_1 \lt \cdots \lt i_r \le n}h(X_{i_1}, \cdots, X_{i_r})$$
+$$
+\begin{equation*}
+U_n = \frac{1}{n \choose r} \sum&lt;/em&gt;{1 \le i_1 \lt \cdots \lt i_r \le n}h(X_{i_1}, \cdots, X_{i_r})
+\end{equation*}
+$$
 这里， $h(\cdot)$ 称为U-统计量的核函数（Kernel function）， 而核函数的维数 $r$ 称为该U-统计量的度（degree）。&lt;/p&gt;
 &lt;h2&gt;两样本U-统计量&lt;/h2&gt;
 &lt;p&gt;定义 $h(x_1, \cdots, x_r; y_1, \cdots, y_s): \mathbb{R}^{r+s} \rightarrow \mathbb{R}$ 为一个函数，其对 $X$ 和 $Y$ 分别具有对称性，即交换任意 $x_{i_1}$， $x_{i_2}$ 的位置或交换任意 $y_{j_1}$ 和 $y_{j_2}$ 的位置， $h$ 的值保持不变（但不能随意交换 $x_i$ 和 $y_j$）。对随机变量 $X_1, \cdots, X_m; Y_1, \cdots, Y_n$ ，基于 $h$ 的两样本U-统计量定义如下：
-$$U_{m, n} = \frac{1}{{m \choose r}{n \choose s}}\sum_{1 \le i_1 \lt \cdots \lt i_r \le m} \sum_{1 \le j_1 \lt \cdots \lt j_s \le n} h(X_1, \cdots, X_m; Y_1, \cdots, Y_n)$$
+$$
+\begin{equation*}
+U_{m, n} = \frac{1}{{m \choose r}{n \choose s}}\sum_{1 \le i_1 \lt \cdots \lt i_r \le m} \sum_{1 \le j_1 \lt \cdots \lt j_s \le n} h(X_1, \cdots, X_m; Y_1, \cdots, Y_n)
+\end{equation*}
+$$
 目前在机器学习中，最常见的情形是 $r = s = 1$ ，例如能量距离和最大平均差异。&lt;/p&gt;
 &lt;h1&gt;Hoeffding的ANOVA分解定理&lt;/h1&gt;
 &lt;h2&gt;定理表述&lt;/h2&gt;
 &lt;p&gt;Hoeffding的ANOVA分解定理是现代U-统计量理论的基础。为表述该定理， 定义：$\mu = \mathbb{E}[h(X_1, \cdots, X_r)]$。对所有的 $1 \le k \le r$ ，定义投影函数：
-$$a_k(x_1, \cdots, x_k) = \mathbb{E}[h(X_1, \cdots, X_r) | X_1 = x_1, \cdots, X_k = x_k] - \mu$$
+$$
+\begin{equation*}
+a_k(x_1, \cdots, x_k) = \mathbb{E}[h(X_1, \cdots, X_r) | X_1 = x_1, \cdots, X_k = x_k] - \mu
+\end{equation*}
+$$
 然后定义正交化投影函数：
 $g_1(x_1) = a_1(x_1)$， $g_2(x_1, x_2) = a_2(x_1, x_2) - g_1(x_1) - g_1(x_2)$， 等等。每一个 $g_k$ 都定义为相应的 $a_k$ 减去之前定义过的所有 $g_1, \cdots, g_{k-1}$， 直至最后一个函数 $g_r$：
-$$g_r(x_1, \cdots, x_r) = a_r(x_1, \cdots, x_r) - \sum_{j=1}^{r-1}\sum_{1 \le i_1 \lt \cdots \lt i_j \le r}g_j(x_{i_1}, \cdots, x_{i_j})$$
+$$
+\begin{equation*}
+g_r(x_1, \cdots, x_r) = a_r(x_1, \cdots, x_r) - \sum_{j=1}^{r-1}\sum_{1 \le i_1 \lt \cdots \lt i_j \le r}g_j(x_{i_1}, \cdots, x_{i_j})
+\end{equation*}
+$$
 Hoeffding的ANOVA分解定理的内容是：
-$$U_n - \mu = {n \choose r}^{-1}\sum_{k=1}^{r}{n - k \choose r - k}\cdot\sum_{1 \le i_1 \lt \cdots \lt i_k \le n}g_k(X_{i_1}, \cdots, X_{i_k})$$
+$$
+\begin{equation*}
+U_n - \mu = {n \choose r}^{-1}\sum_{k=1}^{r}{n - k \choose r - k}\cdot\sum_{1 \le i_1 \lt \cdots \lt i_k \le n}g_k(X_{i_1}, \cdots, X_{i_k})
+\end{equation*}
+$$
 或者如下形式：
-$$U_n - \mu = \sum_{k=1}^{r}{r \choose k}{n \choose k}^{-1}\cdot\sum_{1 \le i_1 \lt \cdots \lt i_k \le n}g_k(X_{i_1}, \cdots, X_{i_k})$$&lt;/p&gt;
+$$
+\begin{equation*}
+U_n - \mu = \sum_{k=1}^{r}{r \choose k}{n \choose k}^{-1}\cdot\sum_{1 \le i_1 \lt \cdots \lt i_k \le n}g_k(X_{i_1}, \cdots, X_{i_k})
+\end{equation*}
+$$&lt;/p&gt;
 &lt;h2&gt;分解项的性质&lt;/h2&gt;
 &lt;p&gt;所有正交化投影函数 $g_k$ 都满足：
-$$\mathbb{E}[g_k(X_1, \cdots, X_k) | X_1, \cdots, X_k] = 0$$
+$$
+\begin{equation*}
+\mathbb{E}[g_k(X_1, \cdots, X_k) | X_1, \cdots, X_k] = 0
+\end{equation*}
+$$
 因此，所有的分解项之间是互不相关的，并且度为 $k$ 的分解项之平均的阶为 $O_p(n ^ {- k / 2})$ 。
 在大多数应用中，一个U-统计量的ANOVA分解中最重要的是前一项或前两项。根据分解项的性质，可以得到如下的两项ANOVA分解式：
-$$U_n - \mu = \frac{r}{n}\sum_{i=1}^{n}g_1(X_i) + \frac{r(r-1)}{n(n-1)}\sum_{1 \le i \lt j \le n}g_2(X_i, X_j) + O_p(n ^ {- 3 / 2})$$&lt;/p&gt;
+$$
+\begin{equation*}
+U_n - \mu = \frac{r}{n}\sum_{i=1}^{n}g_1(X_i) + \frac{r(r-1)}{n(n-1)}\sum_{1 \le i \lt j \le n}g_2(X_i, X_j) + O_p(n ^ {- 3 / 2})
+\end{equation*}
+$$&lt;/p&gt;
 &lt;h1&gt;V-统计量&lt;/h1&gt;
 &lt;p&gt;V-统计量与U-统计量形式相似，且统计性质上有紧密联系。每个V-统计量对应一个U-统计量，很多情况下，V-统计量的渐进分布，只是相应的U-统计量的渐进分布经过一些修饰的版本。&lt;/p&gt;
 &lt;h2&gt;定义&lt;/h2&gt;
 &lt;p&gt;定义 $h(x_1, \cdots, x_r): \mathbb{R}^{r} \rightarrow \mathbb{R}$， 其具有对称性，即交换任意 $x_i$， $x_j$ 的位置，$h$ 的值保持不变。对随机变量 $X_1, \cdots, X_n$， 基于 $h$ 的V-统计量定义如下：
-$$V_n = \frac{1}{n^r}\sum_{1 \le {i_1, \cdots, i_r} \le n}h(X_{i_1}, \cdots, X_{i_r})$$
+$$
+\begin{equation*}
+V_n = \frac{1}{n^r}\sum_{1 \le {i_1, \cdots, i_r} \le n}h(X_{i_1}, \cdots, X_{i_r})
+\end{equation*}
+$$
 这里 $h(\cdot)$ 称为V-统计量的核函数（Kernel function），而核函数的维数 $r$ 称为该V-统计量的度（degree）。&lt;/p&gt;
 &lt;h2&gt;与U-统计量的区别&lt;/h2&gt;
 &lt;p&gt;上述定义中，求和下标 $i_1, \cdots, i_r$ 互相之间不必两两相同，这是V-统计量与U-统计量唯一的区别。&lt;/p&gt;
@@ -36,9 +72,21 @@ $$V_n = \frac{1}{n^r}\sum_{1 \le {i_1, \cdots, i_r} \le n}h(X_{i_1}, \cdots, X_{
 &lt;p&gt;V-统计量和U-统计量是渐进等价的，也就是说，当 $n$ 较大时，应用中一般不区分两者。
 V-统计量用作参数估计时，一般是有偏的。但因其和U-统计量的渐进等价性，这种偏差在大样本情形下可以忽略。&lt;/p&gt;
 &lt;h2&gt;与U-统计量的关系&lt;/h2&gt;
-&lt;p&gt;$$V_n = U_n + O_p(n^{-1})$$
+&lt;p&gt;$$
+\begin{equation*}
+V_n = U_n + O_p(n^{-1})
+\end{equation*}
+$$
 更精确的有：
-$$V_n = U_n + \sum_{k=1}^{r-1}\frac{c_k}{n^k}\sum g_k(X_{i_1}, \cdots, X_{i_k})$$ $$c_k = \frac{r \choose k}{k!}\sum_{\pi \in \mathcal{P}&lt;em&gt;{r,k}}\prod&lt;/em&gt;{j=1}^{k}|\pi_{j}|!$$
+$$
+\begin{equation*}
+V_n = U_n + \sum_{k=1}^{r-1}\frac{c_k}{n^k}\sum g_k(X_{i_1}, \cdots, X_{i_k})
+\end{equation*}
+$$ $$
+\begin{equation*}
+c_k = \frac{r \choose k}{k!}\sum_{\pi \in \mathcal{P}&lt;em&gt;{r,k}}\prod&lt;/em&gt;{j=1}^{k}|\pi_{j}|!
+\end{equation*}
+$$
 其中：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;$\mathcal{P}_{r, k}$：把 $r$ 个位置划分成 $k$ 个非空块的所有划分&lt;/li&gt;
