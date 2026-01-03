@@ -82,7 +82,8 @@ $$
 \begin{equation*}
 V_n = U_n + \sum_{k=1}^{r-1}\frac{c_k}{n^k}\sum g_k(X_{i_1}, \cdots, X_{i_k})
 \end{equation*}
-$$ $$
+$$
+$$
 \begin{equation*}
 c_k = \frac{r \choose k}{k!}\sum_{\pi \in \mathcal{P}&lt;em&gt;{r,k}}\prod&lt;/em&gt;{j=1}^{k}|\pi_{j}|!
 \end{equation*}
