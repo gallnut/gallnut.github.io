@@ -1,4 +1,144 @@
-<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>Gallnut</title><description>Welcome</description><link>https://gallnut.github.io/</link><language>zh_CN</language><item><title>U-统计量和V-统计量</title><link>https://gallnut.github.io/posts/statistic/</link><guid isPermaLink="true">https://gallnut.github.io/posts/statistic/</guid><pubDate>Sat, 03 Jan 2026 00:00:00 GMT</pubDate><content:encoded>&lt;h1&gt;U-统计量&lt;/h1&gt;
+<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>Gallnut</title><description>Welcome</description><link>https://gallnut.github.io/</link><language>zh_CN</language><item><title>PAC 学习框架</title><link>https://gallnut.github.io/posts/pac_learning/</link><guid isPermaLink="true">https://gallnut.github.io/posts/pac_learning/</guid><pubDate>Sun, 18 Jan 2026 00:00:00 GMT</pubDate><content:encoded>&lt;h1&gt;PAC 学习模型&lt;/h1&gt;
+&lt;p&gt;基本的符号说明为，$\mathcal{X}$ 代表样本或者样本空间，$\mathcal{Y}$ 代表标签或者目标空间，简单起见，假设 $\mathcal{Y} = {0, 1}$ 对应于二分类问题，其他场景的理论分析只需简单推广。$c$ 代表一个概念，定义为 $c := \mathcal{X} \rightarrow \mathcal{Y}$ 。概念类代表所有可能概念的集合，记为 $\mathcal{C}$ 。&lt;/p&gt;
+&lt;p&gt;假设样本来源于某个固定但未知的分布 $\mathcal{D}$，样本间相互独立。学习者考虑一组固定的可能的概念 $\mathcal{H}$ 称为假设集，与 $\mathcal{C}$ 不一定一致。学习者接受一个来源于 $\mathcal{D}$ 的独立同分布的样本 $S = (x_1, \cdots, x_m)$ 以及对应的标签 $(c(x_1), \cdots, c(x_m))$, $c \in \mathcal{C}$ 是一个要学习的目标概念。学习任务就是，利用这些有标签的数据样本 $S$，去选择出一个假设 $h_S \in \mathcal{H}$ 使得该假设针对目标概念 $c$ 达到最小的泛化误差 $R(h)$。&lt;/p&gt;
+&lt;h2&gt;泛化误差&lt;/h2&gt;
+&lt;p&gt;给定一个假设 $h \in \mathcal{H}$, 一个目标概念 $c \in \mathcal{C}$，和一个底层分布 $\mathcal{D}$， $h$ 的泛化误差或者说 risk 定义如下：
+$$
+\begin{equation*}
+R(h) = \mathbb{P}&lt;em&gt;{x \sim \mathcal{D}}[h(x) \neq c(x)] = \mathbb{E}&lt;/em&gt;{x \sim \mathcal{D}}[\mathbb{1}_{h(x) \neq c(x)}]
+\end{equation*}
+$$
+泛化误差无法直接获取，因为底层分布和目标概念都是未知的。但学习者可以在样本上计算经验误差。&lt;/p&gt;
+&lt;h2&gt;经验误差&lt;/h2&gt;
+&lt;p&gt;给定一个假设 $h \in \mathcal{H}$, 一个目标概念 $c \in \mathcal{C}$，和一个样本 $S = (x_1, \cdots, x_m)$，经验误差或者经验 risk 定义如下：
+$$
+\begin{equation*}
+\widehat{R}&lt;em&gt;S(h)=\frac{1}{m}\sum&lt;/em&gt;{i=1}^{m}\mathbb{1}&lt;em&gt;{h(x_i) \neq c(x_i)}
+\end{equation*}
+$$
+由于样本是独立同分布的，所以有：
+$$
+\begin{equation*}
+\mathbb{E}&lt;/em&gt;{S \sim \mathcal{D}^m}[\widehat{R}_S(h)] = R(h)
+\end{equation*}
+$$&lt;/p&gt;
+&lt;h2&gt;PAC 学习&lt;/h2&gt;
+&lt;p&gt;一个概念类 $\mathcal{C}$ 被认为是 PAC 可学习的，当存在一个算法 $\mathcal{A}$ 和一个多项式函数 $poly(\cdot,\cdot,\cdot,\cdot)$ 使得对任意的 $\epsilon \gt 0$ 和 $\delta \gt 0$, 对所有的分布 $\mathcal{D}$ 和目标概念 $c \in \mathcal{C}$，当样本规模 $m \ge poly(\frac{1}{\epsilon},\frac{1}{\delta},n,size(c))$ 时，有如下式子成立：
+$$
+\begin{equation*}
+\mathbb{P}_{S \sim \mathcal{D}^m}[R(h_S) \le \epsilon] \ge 1 - \delta
+\end{equation*}
+$$
+如果 $\mathcal{A}$ 运行在 $poly(\frac{1}{\epsilon},\frac{1}{\delta},n,size(c))$ ，则被认为是概念类的一种高效 PAC 可学习算法。&lt;/p&gt;
+&lt;h3&gt;有限假设集一致性场景&lt;/h3&gt;
+&lt;p&gt;$\mathcal{H}$ 是一个将 $\mathcal{X}$ 映射到 $\mathcal{Y}$ 的函数的有限集合，一致性假设的定义是，对于任意的目标概念 $c$ 和独立同分布的样本 $S$, $h_S := \widehat{R}&lt;em&gt;S(h_S) = 0$。对于这样的情形有，对于任意的 $\epsilon \gt 0$ 和 $\delta \gt 0$, 当 $m \ge \frac{1}{\epsilon}(\log{|\mathcal{H}|} + \log{\frac{1}{\delta}})$ 时，有如下式子成立：
+$$
+\begin{equation*}
+\mathbb{P}&lt;/em&gt;{S \sim \mathcal{D}^m}[R(h_S) \le \epsilon] \ge 1 - \delta
+\end{equation*}
+$$
+这实际上定义了一个泛化误差边界，对任意的 $\epsilon \gt 0$ 和 $\delta \gt 0$,在至少 $1 - \delta$ 的概率下有
+$$
+\begin{equation*}
+R(h_S) \le \frac{1}{m}(\log{|\mathcal{H}|} + \log{\frac{1}{\delta}})
+\end{equation*}
+$$&lt;/p&gt;
+&lt;h3&gt;有限假设集非一致性场景&lt;/h3&gt;
+&lt;p&gt;首先，对于任意的假设 $h: X \rightarrow {0, 1}$ 有下面的不等式成立：
+$$
+\mathbb{P}_{S \sim \mathcal{D}^m}[\widehat{R}_S(h) - R(h) \ge \epsilon] \le \exp(-2m\epsilon^2)
+$$&lt;/p&gt;
+&lt;p&gt;$$
+\mathbb{P}_{S \sim \mathcal{D}^m}[\widehat{R}&lt;em&gt;S(h) - R(h) \le -\epsilon] \le \exp(-2m\epsilon^2)
+$$
+进一步可以得到如下不等式：
+$$
+\begin{equation*}
+\mathbb{P}&lt;/em&gt;{S \sim \mathcal{D}^m}[|\widehat{R}_S(h) - R(h)| \ge \epsilon] \le 2\exp(-2m\epsilon^2)
+\end{equation*}
+$$
+证明利用了霍夫丁不等式。
+由上述不等式可得，对于任意一个确定的假设 $h: \mathcal{X} \rightarrow {0, 1}$, 对任意的 $\delta \gt 0$， 在至少 $1 - \delta$ 的概率下，有：
+$$
+\begin{equation*}
+R(h) \le \widehat{R}_S(h) + \sqrt{\frac{\log{\frac{2}{\delta}}}{2m}}
+\end{equation*}
+$$
+进一步推广，对于一个有限的假设集 $\mathcal{H}$，对任意的 $\delta \gt 0$ ，有至少 $1 - \delta$ 的概率，如下不等式成立：
+$$
+\begin{equation*}
+\forall h \in \mathcal{H}, \quad R(h) \le \widehat{R}_S(h) + \sqrt{\frac{\log{|\mathcal{H}|} + \log{\frac{2}{\delta}}}{2m}}
+\end{equation*}
+$$
+证明如下：
+$$
+\begin{align}
+\mathbb{P}[\exists h \in \mathcal{H} |\widehat{R}&lt;em&gt;S(h) &amp;amp;- R(h)| \gt \epsilon] \
+&amp;amp;= \mathbb{P}[(|\widehat{R}&lt;em&gt;S(h_1) - R(h_1)| \gt \epsilon) \lor \cdots \lor (|\widehat{R}&lt;em&gt;S(h&lt;/em&gt;{|\mathcal{H}|}) - R(h&lt;/em&gt;{|\mathcal{H}|})| \gt \epsilon)] \
+&amp;amp;\le \sum&lt;/em&gt;{h \in \mathcal{H}}\mathbb{P}[|\widehat{R}_S(h) - R(h)|] \
+&amp;amp;\le 2|\mathcal{H}|\exp(-2m\epsilon^2)
+\end{align}
+$$&lt;/p&gt;
+&lt;h2&gt;不可知 PAC 学习&lt;/h2&gt;
+&lt;p&gt;所谓不可知，即函数对于输入到标签的映射不是确定的，是一个概率函数。
+如果存在一个多项式 $poly(\cdot,\cdot,\cdot,\cdot)$ 使得对于任意的 $\epsilon \gt 0$ 和 $\delta \gt 0$, 对于 $\mathcal{X} \times \mathcal{Y}$ 上的所有分布 $\mathcal{D}$，当样本规模 $m \ge poly(\frac{1}{\epsilon},\frac{1}{\delta},n,size(c))$ 时，有如下式子成立：
+$$
+\mathbb{P}&lt;em&gt;{S \sim \mathcal{D}^m}[R(h_S) - \min&lt;/em&gt;{h \in \mathcal{H}} \le \epsilon] \ge 1 - \delta
+$$
+如果进一步算法在 $poly$ 下运行，则认为是一个高效的不可知PAC学习算法。&lt;/p&gt;
+&lt;h2&gt;贝叶斯误差&lt;/h2&gt;
+&lt;p&gt;对于一个 $\mathcal{X} \times \mathcal{Y}$ 上的分布 $\mathcal{D}$，贝叶斯误差 $R^&lt;em&gt;$ 可测函数 $h: \mathcal{X} \rightarrow \mathcal{Y}$ 泛化误差的下确界：
+$$
+\begin{equation&lt;/em&gt;}
+R^* = \inf_{h} R(h)
+\end{equation*}
+$$
+使得泛化误差等于贝叶斯误差的那个假设 $h$ 被称为贝叶斯假设或者贝叶斯分类器。&lt;/p&gt;
+&lt;h2&gt;拉德马赫复杂度&lt;/h2&gt;
+&lt;p&gt;拉德马赫复杂度用于定义假设集合的复杂程度。首先定义函数族 $\mathcal{G}$
+$$
+\begin{equation*}
+\mathcal{G} = {g: (x, y) \rightarrow L(h(x), y): h \in \mathcal{H}}
+\end{equation*}
+$$
+其中$L$是损失函数。&lt;/p&gt;
+&lt;h3&gt;经验拉德马赫复杂度&lt;/h3&gt;
+&lt;p&gt;$\mathcal{Z} = \mathcal{X} \times \mathcal{Y}$ , $\mathcal{G}$ 是从 $\mathcal{Z}$ 映射到 $[a, b]$ 的函数族，对于给定的样本 $S = (z_1, \cdots, z_m)$, $\mathcal{G}$ 的经验拉德马赫复杂度定义如下：
+$$
+\begin{equation*}
+\widehat{\mathfrak{R}}&lt;em&gt;S(\mathcal{G}) = \mathbb{E}&lt;/em&gt;{\sigma}[\sup_{g \in \mathcal{G}}\frac{1}{m}\sum_{i = 1}^{m}\sigma_i g(z_i)]
+\end{equation*}
+$$
+其中 $\mathbf{\sigma} = (\sigma_1, \cdots, \sigma_m)^{\top}$, $\sigma_i$ 是独立的均匀分布随机变量，取值于 ${-1, +1}$。该随机变量被称为拉德马赫变量。
+代表了假设函数族与随机变量（噪声）的拟合程度，越是丰富的函数族，越是有能力拟合随机噪声。
+$$
+\begin{equation*}
+\widehat{\mathfrak{R}}&lt;em&gt;S(\mathcal{G}) = \mathbb{E}&lt;/em&gt;\sigma[\sup_{g \in \mathcal{G}}\frac{\sigma \cdot \mathsf{g}_S}{m}]
+\end{equation*}
+$$
+设 $\mathcal{D}$ 是样本来源的分布，拉德马赫复杂度定义为经验拉德马赫复杂度的期望：
+$$
+\begin{equation*}
+\mathfrak{R}&lt;em&gt;m(\mathcal{G}) = \mathbb{E}&lt;/em&gt;{S \sim \mathcal{D}^m}[\widehat{\mathfrak{R}}_S(\mathcal{G})]
+\end{equation*}
+$$&lt;/p&gt;
+&lt;h2&gt;估计误差与逼近误差&lt;/h2&gt;
+&lt;h3&gt;超额误差&lt;/h3&gt;
+&lt;p&gt;$h \in \mathcal{H}$ 的超额误差定义为泛化误差 $R(h)$ 与贝叶斯误差 $R^&lt;em&gt;$ 的差值：
+$$
+\begin{equation&lt;/em&gt;}
+R_{excess}(h) = R(h) - R^*
+\end{equation*}
+$$
+超额误差可以作如下分解：
+$$
+\begin{equation*}
+R(h) - R^* = \underbrace{(R(h) - \inf_{h \in \mathcal{H}}R(h))}&lt;em&gt;{estimation} + \underbrace{(\inf&lt;/em&gt;{h \in \mathcal{H}}R(h) - R^&lt;em&gt;)}_{approximation}
+\end{equation&lt;/em&gt;}
+$$
+&lt;img src=&quot;./estimation_approximation.png&quot; alt=&quot;&quot; /&gt;
+第一项称为估计误差，第二项称为逼近误差。估计误差取决于所选假设 $h$，它是衡量 $h$ 相对于 $\mathcal{H}$ 中假设所产生误差的下确界之间的误差，表示与当前假设类中最优假设的差距。逼近误差，衡量在假设类中的最优假设与全局最优假设贝叶斯分类器之间的差距，这是假设类 $\mathcal{H}$ 的性质。&lt;/p&gt;
+</content:encoded></item><item><title>U-统计量和V-统计量</title><link>https://gallnut.github.io/posts/statistic/</link><guid isPermaLink="true">https://gallnut.github.io/posts/statistic/</guid><pubDate>Sat, 03 Jan 2026 00:00:00 GMT</pubDate><content:encoded>&lt;h1&gt;U-统计量&lt;/h1&gt;
 &lt;h2&gt;定义&lt;/h2&gt;
 &lt;p&gt;定义 $h(x_1, \cdots, x_r): \mathbb{R}^r \rightarrow \mathbb{R}$ 为一个函数，其具有对称性，即交换任意 $x_i$, $x &lt;em&gt;j$ 的位置， $h$ 的值保持不变。对随机变量 $X_1, \cdots, X_n$, 基于 $h$ 的 U-统计量定义如下：
 $$
