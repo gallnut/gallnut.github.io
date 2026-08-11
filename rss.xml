@@ -1,4 +1,480 @@
-<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>Gallnut</title><description>Welcome</description><link>https://gallnut.github.io/</link><language>zh_CN</language><item><title>PAC 学习框架</title><link>https://gallnut.github.io/posts/pac_learning/</link><guid isPermaLink="true">https://gallnut.github.io/posts/pac_learning/</guid><pubDate>Sun, 18 Jan 2026 00:00:00 GMT</pubDate><content:encoded>&lt;h1&gt;PAC 学习模型&lt;/h1&gt;
+<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>Gallnut</title><description>Welcome</description><link>https://gallnut.github.io/</link><language>zh_CN</language><item><title>Qwen3-0.6B 在 RTX 4060 Laptop 上的严格 TTFT / TPOT 下界</title><link>https://gallnut.github.io/posts/qwen3_rtx4060_latency_limits/</link><guid isPermaLink="true">https://gallnut.github.io/posts/qwen3_rtx4060_latency_limits/</guid><pubDate>Tue, 11 Aug 2026 00:00:00 GMT</pubDate><content:encoded>&lt;h1&gt;Qwen3-0.6B 在 RTX 4060 Laptop 上的严格 TTFT / TPOT 下界&lt;/h1&gt;
+&lt;blockquote&gt;
+&lt;p&gt;一篇关于“推理延迟到底能压到多少”的推导笔记。本文给出延迟下界（等价于吞吐上界），它不是性能预测，也不承诺某个 kernel 一定能达到这个数。数据来自 &lt;a href=&quot;https://github.com/gallnut/firefly&quot;&gt;Firefly&lt;/a&gt; 项目的实测与分析脚本（&lt;a href=&quot;https://github.com/gallnut/firefly/blob/main/benchmarks/theoretical_limits.py&quot;&gt;theoretical_limits.py&lt;/a&gt;），推导可复现：&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;pre&gt;&lt;code&gt;python3 benchmarks/theoretical_limits.py --clock max
+python3 benchmarks/theoretical_limits.py --clock reported
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;所有带宽单位都是十进制（&lt;code&gt;GB = 10^9 字节&lt;/code&gt;）；显存容量按 CUDA API 返回的字节数计（二进制）。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;说明：文中涉及的具体实现参数（如 prefill chunk 大小、实测数据）以写作时的代码状态为准；方法本身不依赖这些具体数值。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2&gt;0. 为什么做这件事&lt;/h2&gt;
+&lt;p&gt;跑推理时我们常被问“还能不能更快”。与其凭感觉优化，不如先把“物理上不可能低于多少”算清楚：哪些延迟是模型和硬件决定的，哪些是当前实现浪费的。这样优化就有了标尺——知道目标在哪，也知道什么时候该停止。&lt;/p&gt;
+&lt;p&gt;本文用 Qwen3-0.6B + RTX 4060 Laptop 这个具体组合，推导 TTFT（首 token 延迟）和 TPOT（每个输出 token 的解码间隔）的严格下界，并和 Firefly 的实测数据对比。&lt;/p&gt;
+&lt;h2&gt;1. 范围与四种不同的“极限”&lt;/h2&gt;
+&lt;p&gt;除非表格另有说明，本文假设：单请求、batch size 1、BF16 权重与激活、无 prefix-cache 命中、greedy argmax、客户端与服务同机。&lt;/p&gt;
+&lt;p&gt;记：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;P&lt;/code&gt;：从头处理的 prompt token 数。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;L&lt;/code&gt;：某次 decode 之前已有的 token 数。attention 在追加当前 token 后看到 &lt;code&gt;L + 1&lt;/code&gt; 个 token。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;S_i&lt;/code&gt;：Firefly 第 i 个 prefill chunk 的大小（上限 4096）。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;A_i&lt;/code&gt;：chunk &lt;code&gt;i&lt;/code&gt; 之前的 token 数。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;T&lt;/code&gt;：延迟；batch-1 decode 下 &lt;code&gt;TPS = 1 / T&lt;/code&gt;。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;下面四个量经常被混为一谈，必须分开：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;物理绝对下界&lt;/strong&gt;：把整颗 GPU 的已发布资源上限，套到“必不可少的信息搬运 + 有用计算”上。它允许模型 DAG 中本不可重叠的工作重叠，因此是刻意乐观的。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;最优 DAG 下界&lt;/strong&gt;：尊重 linear、attention、elementwise、LM head、sampling 之间的依赖关系，但假设 kernel 理想、缓存分配理想、利用率拉满。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;当前 Firefly 算法下界&lt;/strong&gt;：把当前实现强加的工作都算进去，例如标量 prefill attention、重复的指数运算、4096 token 分块、INT8 MMA 填充、split/reduce 临时缓冲。对未公开的缓存/访存速率，保留符号项。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;实测延迟&lt;/strong&gt;：包含利用率损失、缓存未命中、launch 与依赖气泡、host 调度、拷贝和服务开销。在假设一致的前提下，实测必须大于每个合法下界。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;对可以内部重叠资源的阶段 &lt;code&gt;j&lt;/code&gt;：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;T_j &amp;gt;= max(B_DRAM,j / BW_DRAM,
+           F_TC,j / P_TC,
+           F_FP32,j / P_FP32,
+           N_SFU,j / P_SFU,
+           N_LDST,j / P_LDST,
+           N_barrier,j / P_barrier,
+           T_dependency,j).
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;数据相关的阶段是串行的，所以正确的 DAG 下界是&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;T_request &amp;gt;= sum_j T_j,
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;而不是一个全局 &lt;code&gt;max(总 FLOP / 峰值, 总字节 / 带宽)&lt;/code&gt;。&lt;/p&gt;
+&lt;h2&gt;2. 硬件常数&lt;/h2&gt;
+&lt;p&gt;本机设备报告：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;NVIDIA GeForce RTX 4060 Laptop GPU, compute capability 8.9
+24 SM, 3072 CUDA cores, 4 Tensor Cores/SM
+8 GiB 级显存, 128-bit GDDR6
+L2 = 33,554,432 bytes
+shared memory/SM = 102,400 bytes
+registers/SM = 65,536
+每 SM 最大常驻线程 = 1,536
+CUDA 报告的 clockRate = 2.250 GHz
+nvidia-smi 最大 graphics clock = 3.105 GHz
+memory clock = 8.001 GHz
+PCIe 最大链路 = Gen4 x8
+默认/最大功耗 = 80/140 W
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;算术上限用 3.105 GHz。虽然最大 SM 时钟、最大显存时钟、最大功耗不一定能同时维持，但作为上界是合法的。2.250 GHz 这一列是第二个“以时钟为条件”的上限，不是观测到的负载时钟。&lt;/p&gt;
+&lt;p&gt;Ada 架构每 SM 每时钟有 128 个 FP32 结果、4 个 Tensor Core、16 个近似 SFU 结果。NVIDIA Ada 白皮书中的 RTX 4090 数据按 SM 折算得到：每 SM 每时钟 512 次 BF16 稠密 FLOP（FP32 累加）、2048 次 INT8 稠密运算、4096 次 INT4 稠密运算。NVIDIA 表中 &lt;code&gt;/&lt;/code&gt; 前面的值是稠密，后面是结构化稀疏。&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;资源&lt;/th&gt;
+&lt;th&gt;3.105 GHz 物理上限&lt;/th&gt;
+&lt;th&gt;2.250 GHz 报告时钟&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;FP32 FMA&lt;/td&gt;
+&lt;td&gt;19.077 TFLOP/s&lt;/td&gt;
+&lt;td&gt;13.824 TFLOP/s&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;BF16 tensor, 稠密, FP32 累加&lt;/td&gt;
+&lt;td&gt;38.154 TFLOP/s&lt;/td&gt;
+&lt;td&gt;27.648 TFLOP/s&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;INT8 tensor, 稠密&lt;/td&gt;
+&lt;td&gt;152.617 TOPS&lt;/td&gt;
+&lt;td&gt;110.592 TOPS&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;INT4 tensor, 稠密&lt;/td&gt;
+&lt;td&gt;305.234 TOPS&lt;/td&gt;
+&lt;td&gt;221.184 TOPS&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;SFU 近似结果&lt;/td&gt;
+&lt;td&gt;1.192 Tresult/s&lt;/td&gt;
+&lt;td&gt;0.864 Tresult/s&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;GDDR6&lt;/td&gt;
+&lt;td&gt;256.032 GB/s&lt;/td&gt;
+&lt;td&gt;256.032 GB/s&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;显存带宽：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;BW_DRAM = 2 transfers/clock * 8.001e9 clock/s * 128 bit / 8
+        = 256.032e9 byte/s.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;FP32 上限把一次 FMA 计为两次 FLOP：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;P_FP32 = 24 SM * 128 result/clock/SM * 2 FLOP/result * 3.105e9 clock/s
+        = 19.07712e12 FLOP/s.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;NVIDIA 公布每 SM 每时钟 16 个近似倒数、倒数平方根、以 2 为底的对数/指数、正弦/余弦结果，但没有公布精确 &lt;code&gt;expf&lt;/code&gt;、&lt;code&gt;powf&lt;/code&gt;、依赖链、缓存带宽或各类 load/store 的完整延迟/吞吐模型。Firefly 使用 &lt;code&gt;--use_fast_math&lt;/code&gt; 编译，SASS 中有 &lt;code&gt;MUFU.EX2&lt;/code&gt;、&lt;code&gt;MUFU.LG2&lt;/code&gt;、&lt;code&gt;MUFU.SIN&lt;/code&gt;、&lt;code&gt;MUFU.COS&lt;/code&gt;、&lt;code&gt;MUFU.RCP&lt;/code&gt;；下文 SFU 下界只统计这些原始结果。若编译器展开方式不能由源码层面确定，则该项保持符号形式。&lt;/p&gt;
+&lt;h2&gt;3. 模型精确工作量&lt;/h2&gt;
+&lt;p&gt;本地 &lt;code&gt;qwen3/config.json&lt;/code&gt; 与 safetensors 给出：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;hidden H = 1024                 intermediate I = 3072
+layers N = 28                   query heads Hq = 16
+KV heads Hkv = 8                head dimension D = 128
+vocabulary V = 151,936          dtype = BF16
+total parameters = 751,632,384  total bytes = 1,503,264,768
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;每个 transformer 层有 7 个权重矩阵：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;Q:    1024 * 2048 =  2,097,152
+K:    1024 * 1024 =  1,048,576
+V:    1024 * 1024 =  1,048,576
+O:    2048 * 1024 =  2,097,152
+Gate: 1024 * 3072 =  3,145,728
+Up:   1024 * 3072 =  3,145,728
+Down: 3072 * 1024 =  3,145,728
+                         --------
+per layer              15,728,640 parameters
+28 layers             440,401,920 parameters
+LM head               155,582,464 parameters
+active/token           595,984,384 parameters
+active BF16 bytes    1,191,968,768 bytes
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;输入 embedding 表在模型语义上是 tie 的，但 safetensors 里有独立的 &lt;code&gt;lm_head.weight&lt;/code&gt;。Embedding 查找只读 &lt;code&gt;P * H * 2&lt;/code&gt; 字节；LM head 计算要读全部 311,164,928 字节。&lt;/p&gt;
+&lt;h3&gt;3.1 线性层算术&lt;/h3&gt;
+&lt;p&gt;一次乘加算两次 FLOP：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;F_transformer_linear(P) = 2 * P * 440,401,920
+F_lm_head               = 2 * 155,582,464
+F_decode_linear         = 2 * 595,984,384
+                        = 1,191,968,768 FLOP/token.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Firefly 所有矩阵都走 &lt;code&gt;cublasGemmEx&lt;/code&gt;，BF16 输入输出、FP32 计算。&lt;/p&gt;
+&lt;h3&gt;3.2 有用的 attention 算术&lt;/h3&gt;
+&lt;p&gt;一对 QK 用 &lt;code&gt;2D&lt;/code&gt; FLOP，PV 用 &lt;code&gt;2D&lt;/code&gt; FLOP。一个 &lt;code&gt;S&lt;/code&gt; 个 query、前面有 &lt;code&gt;A&lt;/code&gt; 个 token 的 chunk：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;E(A,S) = S*A + S(S+1)/2                         可见 query-key 边数
+F_attn(A,S) = 4*N*Hq*D*E(A,S)
+            = 229,376 * E(A,S) FLOP.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;整段因果 prompt：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;F_attn(P) = 2*N*Hq*D*P(P+1)
+          = 114,688 * P(P+1) FLOP.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;decode：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;F_attn_decode(L) = 4*N*Hq*D*(L+1)
+                 = 229,376*(L+1) FLOP.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;最优的普通 softmax 对每个可见分数算一次指数：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;N_exp,optimal = N*Hq*E = 448*E.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Online softmax 每个 tile 会多一次 rescaling 指数，但这是 &lt;code&gt;O(E/tile)&lt;/code&gt; 量级，不改变 QK/PV 的有用算术。&lt;/p&gt;
+&lt;h3&gt;3.3 Elementwise 与 SFU 工作量&lt;/h3&gt;
+&lt;p&gt;每个 transformer 层每个 token，源码路径执行：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Q 的 RMSNorm（16 行 × 128）和 K 的 RMSNorm（8 行 × 128）。&lt;/li&gt;
+&lt;li&gt;RoPE 作用在 &lt;code&gt;(16 + 8) * 64 = 1536&lt;/code&gt; 对元素上。当前源码对每个 head/对分别计算 &lt;code&gt;powf&lt;/code&gt;、&lt;code&gt;cosf&lt;/code&gt;、&lt;code&gt;sinf&lt;/code&gt;，即每层每 token 有 1536 次 log/exp 型幂运算、1536 次余弦、1536 次正弦。角度只由位置和对决定，24 个 head 重复计算在数学上并非必要。&lt;/li&gt;
+&lt;li&gt;两次 hidden-size 的 fused residual/RMSNorm 过渡（最后一次过渡是 residual 加，随后由最终 RMSNorm 处理）。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;I = 3072&lt;/code&gt; 次 SwiGLU 指数。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;当前 Firefly 下界对每个 &lt;code&gt;rsqrtf&lt;/code&gt;、&lt;code&gt;__expf&lt;/code&gt;、正弦、余弦各记一个 SFU 原始结果，对正底数 &lt;code&gt;powf&lt;/code&gt; 保守记一组 &lt;code&gt;LG2 + EX2&lt;/code&gt;。源码级精确 &lt;code&gt;expf/powf&lt;/code&gt; 可能编译出更多指令，以 SASS 为准。最优 DAG 下界不计当前重复的 RoPE 超越函数调用——最优实现可以共享或递推生成正弦/余弦值，SFU 项里只留下不可避免的 SwiGLU 指数和 norm 的平方根倒数。&lt;/p&gt;
+&lt;h2&gt;4. KV Cache 与不可避免的访存字节&lt;/h2&gt;
+&lt;h3&gt;4.1 存储&lt;/h3&gt;
+&lt;p&gt;当前 INT8 cache 每个 K/V 元素占 1 字节，每个 token、每个 KV head、每层还有 2 个 FP32 scale：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;K/V = 28 * 8 * 128 * 2 * 1 = 57,344 byte/token
+scale = 28 * 8 * 2 * 4      =  1,792 byte/token
+total INT8                  = 59,136 byte/token = 57.75 KiB/token.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;分配形状见 &lt;code&gt;src/execution/engine.cc&lt;/code&gt;：&lt;code&gt;[block, 16, kv_heads, 2] F32&lt;/code&gt;。&lt;code&gt;src/main.cc&lt;/code&gt; 的展示计算把 scale 字节除以 16，打印成 56.1094 KiB/token——展示是错的，分配是对的。&lt;/p&gt;
+&lt;p&gt;假设相同的 FP32 scale 粒度、打包的 INT4 cache：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;packed K/V = 28,672 byte/token
+scale       =  1,792 byte/token
+total INT4  = 30,464 byte/token.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;BF16 cache 是 114,688 byte/token。&lt;/p&gt;
+&lt;h3&gt;4.2 Decode 的 DRAM 下界&lt;/h3&gt;
+&lt;p&gt;活跃权重集是 1,191,968,768 字节，是 32 MiB L2 的 35.5 倍。稳定 batch-1 decode 下，相邻两个 token 之间最多只有 &lt;code&gt;L2&lt;/code&gt; 字节能留在缓存里。因此严格的不可避免字节下界是&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;B_decode,min(q,L) = max(0, B_weights + q*L - L2) + q
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;其中 &lt;code&gt;q&lt;/code&gt; 是每 token KV 字节数。&lt;code&gt;q*L&lt;/code&gt; 项读历史缓存；最后的 &lt;code&gt;+q&lt;/code&gt; 写当前 token 的缓存。当前 K/V 可以从 append 经缓存流向 attention，因此物理下界中不算它是不可避免的 DRAM 读。这里假设 L2 的每一字节都被完美分配给本会被重读的数据。更简单的“无持久缓存”下界是&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;B_decode,no-persist(q,L) = B_weights + q*L + q.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;8K INT8 时 &lt;code&gt;L2/BW = 0.131 ms&lt;/code&gt;，两个下界只差 0.131 ms。权重和 KV 读取主导激活流量。&lt;/p&gt;
+&lt;p&gt;当前 kernel 的全局访存并不自动等于 DRAM 访存：小的中间量可以留在 L2，paged attention 的 K/V 读取在 GQA 重复 head 读取后也可能由 L2 满足。反过来，每个 kernel 边界都会物化全局张量。按源码统计，INT8 下 decode 每 token 有约 4.70 MB 固定的“非权重、非历史 KV”全局读写负载（含 Q 量化写入和当前 token 的 K/V append 路径）；量化 Q 和 scale 的读取在 28 层上再增加 &lt;code&gt;59,136 * R_launch&lt;/code&gt; 字节/token。这些是负载计数，不是事务计数，也不是不可避免的 HBM 流量。&lt;/p&gt;
+&lt;h2&gt;5. TTFT 严格推导&lt;/h2&gt;
+&lt;p&gt;客户端 TTFT 是&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;T_TTFT = T_queue + T_H2D + sum_i T_chunk(A_i,S_i)
+       + T_last_hidden + T_final_norm + T_lm_head
+       + T_argmax + T_D2H + T_result_queue + T_gRPC.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;所有项非负，因此把 host/服务项置零就得到一个合法的物理下界。当前 Firefly 中，空闲引擎每 10 ms 轮询一次；取决于请求到达相位，客户端可能等 0 到接近 10 ms 才开始调度。这是实现延迟，不是 GPU 的数学下限。&lt;/p&gt;
+&lt;p&gt;PCIe 4.0 x8 原始负载上限是 &lt;code&gt;8 * 16 GT/s * 128/130 / 8 = 15.754 GB/s&lt;/code&gt;。忽略包开销和固定 DMA 延迟，prompt H2D 的下界是&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;T_H2D &amp;gt;= (4P input-id bytes + 4C context bytes + 4B block-table bytes) / 15.754e9.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;生成 token 的 D2H 下界是 &lt;code&gt;4 / 15.754e9 = 0.254 ns&lt;/code&gt;。相比 GPU 毫秒级下界这些传输下限可忽略，但真实 DMA launch、PCIe 协议与同步延迟不是零。CUDA Graph 路径的 block-table 项可能大得多，因为它拷贝的是运行时容量而不是只拷贝已用块。&lt;/p&gt;
+&lt;h3&gt;5.1 物理绝对下界&lt;/h3&gt;
+&lt;p&gt;从头处理一段 prompt：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;F_useful(P) = 2P*440,401,920 + 311,164,928 + 114,688*P(P+1)
+B_min(P,q) &amp;gt;= B_transformer + B_lm_head + 2PH + qP - L2.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;减法给出请求组合不可避免数据“初始完全驻留”的最乐观可能。L2 容量只能减一次，不能对每套串行权重各减一次。结果下限截到零。于是：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;T_TTFT,physical &amp;gt;= max(F_useful/P_BF16_TC,
+                       B_min/BW_DRAM,
+                       448*P(P+1)/2/P_SFU).
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;这个全局 max 允许跨依赖层做不可能的 overlap，只是绝对物理下界。&lt;/p&gt;
+&lt;h3&gt;5.2 最优 DAG 下界&lt;/h3&gt;
+&lt;p&gt;对 7 个 transformer GEMM 和最终 LM head：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;T_gemm &amp;gt;= max(2MNK/P_BF16_TC, B_weight/BW_DRAM).
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;把所有串行 GEMM 求和；对每套串行 transformer/LM-head 权重扫描最多减一次 L2 容量；再加上理想 fused attention 的 roofline 和必须的 SFU 工作。这就是“Optimal DAG”列。它假设最优的整段 prefill 算法，且不物化完整分数矩阵。&lt;/p&gt;
+&lt;h3&gt;5.3 当前 Firefly 算法下界&lt;/h3&gt;
+&lt;p&gt;Firefly 按 4096 token 分块：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;C = ceil(P/4096),
+S_i = min(4096, P-A_i),
+A_i = sum_{k&amp;lt;i} S_k.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;每个 chunk 都执行全部 28 层，重读全部 880,803,840 字节 transformer 权重；只有最后一个 chunk 读 311,164,928 字节的 LM head。这个分块在当前引擎中是精确的，它制造了一个整段算法没有的带宽下限。&lt;/p&gt;
+&lt;p&gt;量化 cache 的 prefill 第一个 chunk 刻意对当前 Q/K/V 调用连续的标量 attention；后续 chunk 调用量化 paged attention。对每个可见分数：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;第一个 chunk 标量 attention：128 次 FP32 QK 乘法、127 次归约加、分数乘法、128-lane 累加器/值更新、128 个线程冗余执行的 2 次指数、8 次 block barrier。&lt;/li&gt;
+&lt;li&gt;后续 paged 量化 attention：同样的 QK 归约、scale/反量化算术、128 线程冗余的 2 次指数、值反量化/更新、8 次 barrier、block-table 与 scale 读取。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;因此当前源码在所有 head/层上强制：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;N_exp,current-prefill = 256 * 448 * P(P+1)/2.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;这是“每分数一次指数”最优量的 256 倍。下界使用 NVIDIA 公布的每 SM 每时钟 16 个近似 SFU 结果。&lt;code&gt;__syncthreads()&lt;/code&gt; 在 compute capability 8.x 上每 SM 每时钟 16 次运算；每个分数有 8 次 barrier、每次 barrier 有 4 个 32 线程 warp 到达，且 barrier 形成循环携带依赖。表格报告的是算术、SFU、barrier 三者中已发布资源上限最大的一项；未发布的显存/缓存发射限制保持符号形式。&lt;/p&gt;
+&lt;h3&gt;5.4 TTFT 数值下界&lt;/h3&gt;
+&lt;p&gt;下表用 3.105 GHz 绝对时钟和 INT8 cache 写入。“Current attention K/V element payload”统计源码循环里的 K/V 元素读取，不含 block-table/scale 元数据与事务过取，不能当作每次都 L2 未命中再除以 DRAM 带宽。K/V 循环外的固定全局负载从 64 token 时的约 0.251 GB 增长到 8K 时的 32.0 GB，但大部分是可能由 L2 满足的逐层工作数据。&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Prompt&lt;/th&gt;
+&lt;th&gt;Chunks&lt;/th&gt;
+&lt;th&gt;有用计算&lt;/th&gt;
+&lt;th&gt;物理绝对&lt;/th&gt;
+&lt;th&gt;最优 DAG&lt;/th&gt;
+&lt;th&gt;Firefly 指令下界&lt;/th&gt;
+&lt;th&gt;当前 attention K/V 元素负载&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;64&lt;/td&gt;
+&lt;td&gt;1&lt;/td&gt;
+&lt;td&gt;0.057 TFLOP&lt;/td&gt;
+&lt;td&gt;4.540 ms&lt;/td&gt;
+&lt;td&gt;4.556 ms&lt;/td&gt;
+&lt;td&gt;4.753 ms&lt;/td&gt;
+&lt;td&gt;0.000 TB&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;1,024&lt;/td&gt;
+&lt;td&gt;1&lt;/td&gt;
+&lt;td&gt;1.023 TFLOP&lt;/td&gt;
+&lt;td&gt;26.803 ms&lt;/td&gt;
+&lt;td&gt;28.190 ms&lt;/td&gt;
+&lt;td&gt;75.662 ms&lt;/td&gt;
+&lt;td&gt;0.120 TB&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;2,048&lt;/td&gt;
+&lt;td&gt;1&lt;/td&gt;
+&lt;td&gt;2.285 TFLOP&lt;/td&gt;
+&lt;td&gt;59.901 ms&lt;/td&gt;
+&lt;td&gt;61.599 ms&lt;/td&gt;
+&lt;td&gt;251.102 ms&lt;/td&gt;
+&lt;td&gt;0.481 TB&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;4,096&lt;/td&gt;
+&lt;td&gt;1&lt;/td&gt;
+&lt;td&gt;5.533 TFLOP&lt;/td&gt;
+&lt;td&gt;145.009 ms&lt;/td&gt;
+&lt;td&gt;147.329 ms&lt;/td&gt;
+&lt;td&gt;904.565 ms&lt;/td&gt;
+&lt;td&gt;1.925 TB&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;8,192&lt;/td&gt;
+&lt;td&gt;2&lt;/td&gt;
+&lt;td&gt;14.913 TFLOP&lt;/td&gt;
+&lt;td&gt;390.871 ms&lt;/td&gt;
+&lt;td&gt;394.435 ms&lt;/td&gt;
+&lt;td&gt;3,421.698 ms&lt;/td&gt;
+&lt;td&gt;4.811 TB&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;16,384&lt;/td&gt;
+&lt;td&gt;4&lt;/td&gt;
+&lt;td&gt;45.220 TFLOP&lt;/td&gt;
+&lt;td&gt;1,185.179 ms&lt;/td&gt;
+&lt;td&gt;1,191.231 ms&lt;/td&gt;
+&lt;td&gt;13,297.311 ms&lt;/td&gt;
+&lt;td&gt;16.356 TB&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;早期的 8K 探针实际约 8,736 token，实测 TTFT 约 5.28 s。后来修正为 8,228 token 的标量/paged 基线在 INT8 KV-cache 改动后测得 68.35 s，这一改动把同一算法路径暴露得更直接。优化后的 Release 实现改用 FlashInfer 独立的 C++ 连续 prefill kernel，以及可复用的 INT8 paged-cache 反量化桥接做 chunked prefill。4 个顺序 8K 请求测得平均 TTFT 658.24 ms，p50 660.20 ms、p99 679.04 ms——比固定标量基线快 103.8 倍，是最优 DAG 下界 394.44 ms 的 1.67 倍。剩余差距包括非 attention 的模型 kernel、KV 量化/反量化流量、launch 开销、服务开销，以及“峰值发布吞吐”和“持续应用吞吐”的差异。&lt;/p&gt;
+&lt;h2&gt;6. TPOT 严格推导&lt;/h2&gt;
+&lt;p&gt;Benchmark 的 TPOT 在客户端计算：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;TPOT = (request_end - request_start - TTFT) / (completion_tokens - 1).
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;因此它包含稳定的 decode GPU 工作、H2D/D2H、host 同步、调度/结果处理、流式传输和任何争用。物理下界把非 GPU 项置零。&lt;/p&gt;
+&lt;h3&gt;6.1 物理与最优 DAG 下界&lt;/h3&gt;
+&lt;p&gt;有用的 decode 算术是&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;F_decode,useful(L) = 1,191,968,768 + 229,376*(L+1) FLOP.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;物理下界：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;T_decode,physical &amp;gt;= max(B_decode,min/BW_DRAM,
+                         F_linear/P_BF16_TC + F_attention/P_BF16_TC).
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;最优 DAG 下界把 7 个串行 GEMM roofline 与 LM-head roofline 求和，在权重扫描上最多减一次 L2 容量，再加上理想 attention 与 elementwise/SFU 阶段下界。对表中每个上下文，它数值上都等于 HBM 下限——因为 batch-1 decode 由“读 BF16 权重 + KV”主导。&lt;/p&gt;
+&lt;h3&gt;6.2 当前 INT8 attention 工作量&lt;/h3&gt;
+&lt;p&gt;当前 INT8 CuTe 路径用 256 token 的 split。记&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;R_active = ceil((L+1)/256),
+T16 = floor((L+1)/16).
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;当前引擎有两种不同的 launch 形状：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;R_launch = R_active,                                      L &amp;gt;= 4096 fallback 路径
+R_launch = ceil(max_context_blocks_runtime * 16 / 256),  L &amp;lt; 4096 捕获图路径.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;捕获图用 &lt;code&gt;max_decode_context_len = 0&lt;/code&gt; 调模型；attention launcher 于是按整个运行时 KV 分配来定 grid。空 split 会跳过 token 循环，但仍写 partial 状态，并被 reduce kernel 扫描。&lt;code&gt;max_context_blocks_runtime&lt;/code&gt; 取决于启动时显存 profiling，无法化成只跟模型有关的常数——这是短上下文下一个实质性的当前实现项。&lt;/p&gt;
+&lt;p&gt;每层、每个 KV head、每个完整的 16-token tile 发射 4 条 &lt;code&gt;m16n8k32&lt;/code&gt; 指令。每条指令执行&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;16 * 8 * 32 乘加 * 2 次运算 = 8192 次 INT8 运算.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;8 个 MMA 列里只有 2 列是不同的 Q head，Q 行被复制 4 次。因此完整 tile 发射的 QK 工作量是有用 QK 的 4 倍。全模型忽略 DP4A 尾巴：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;N_INT8,issued ~= 28 * 8 * T16 * 4 * 8192.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;和权重/KV 带宽下限相比仍然很小：8K 时是 3.76 GOP，在 152.6 TOPS 下只有 0.025 ms。&lt;/p&gt;
+&lt;p&gt;tiled partial kernel 有 64 个线程。对每个可见 token，每个线程为两个真实 query 计算 4 次 online-softmax 指数（减去 split 起点初始化的 beta 分支）。dual reduce 再对每个 split 和输出维度计算 scale。脚本统计：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;N_exp,main/layer   = 2048*(L+1) - 1024*R_active
+N_exp,reduce/layer = 2064*R_active
+N_exp,total        = 28 * (N_exp,main/layer + N_exp,reduce/layer).
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;8K 时是 4.708 亿个 SFU 结果，绝对 SFU 下限 0.395 ms。它低于 6.42 ms 的 HBM 下限，但在 attention 阶段内部不算可忽略。&lt;/p&gt;
+&lt;p&gt;对尺寸正确的 launch，每层 split partial 负载是&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;B_partial = 16*R_active*(m:4 + l:4 + acc:128*4) = 8320R_active byte.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;partial kernel 写一次；dual reduce 冗余重读 &lt;code&gt;m/l&lt;/code&gt;，并重读每个累加器，当前代码每层产生约 &lt;code&gt;16,576R&lt;/code&gt; 全局读字节。因此 split/reduce 临时缓冲的全局流量大约是&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;B_scratch,current = 697,088 * R_launch byte.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;8K fallback 时 &lt;code&gt;R_launch=R_active=33&lt;/code&gt;，即 23.0 MB 全局流量。短上下文时图的 &lt;code&gt;R_launch&lt;/code&gt; 可能远大于 &lt;code&gt;R_active&lt;/code&gt;。scratch 逐层复用，可能驻留 L2——它既不是自动的 HBM 流量，也不是免费的。其精确下界是 &lt;code&gt;max(B_scratch/B_L2, N_LDST/P_LDST, T_dependency)&lt;/code&gt;，而这些速率 NVIDIA 没有公布。&lt;/p&gt;
+&lt;p&gt;当前 CUDA Graph decode 在每步之前还拷贝一份静态分配的全容量 block table（H2D）。确切字节数取决于运行时显存 profiling 和图 batch size，不只取决于 &lt;code&gt;L&lt;/code&gt;，因此记作&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;B_graph-H2D = 4 * target_batch_size * max_context_blocks_runtime.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;这是当前实现项，不属于模型理论极限。&lt;/p&gt;
+&lt;h3&gt;6.3 TPOT 数值下界&lt;/h3&gt;
+&lt;p&gt;下表全部使用 3.105 GHz 绝对时钟。INT4 假设成熟的打包 INT4 attention 实现和相同的每 token/每 KV head FP32 scale；当前 Firefly 尚未实现该路径。&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Past&lt;/th&gt;
+&lt;th&gt;BF16 物理延迟 / TPS&lt;/th&gt;
+&lt;th&gt;INT8 物理延迟 / TPS&lt;/th&gt;
+&lt;th&gt;INT4 物理延迟 / TPS&lt;/th&gt;
+&lt;th&gt;INT8 最优 DAG&lt;/th&gt;
+&lt;th&gt;Firefly INT8 已发布资源下限（right-sized splits）&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;0&lt;/td&gt;
+&lt;td&gt;4.525 ms / 221.0&lt;/td&gt;
+&lt;td&gt;4.525 ms / 221.0&lt;/td&gt;
+&lt;td&gt;4.525 ms / 221.0&lt;/td&gt;
+&lt;td&gt;4.525 ms / 221.0&lt;/td&gt;
+&lt;td&gt;4.525 ms / 221.0&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;1,024&lt;/td&gt;
+&lt;td&gt;4.984 ms / 200.7&lt;/td&gt;
+&lt;td&gt;4.761 ms / 210.0&lt;/td&gt;
+&lt;td&gt;4.646 ms / 215.2&lt;/td&gt;
+&lt;td&gt;4.761 ms / 210.0&lt;/td&gt;
+&lt;td&gt;4.761 ms / 210.0&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;4,096&lt;/td&gt;
+&lt;td&gt;6.360 ms / 157.2&lt;/td&gt;
+&lt;td&gt;5.471 ms / 182.8&lt;/td&gt;
+&lt;td&gt;5.012 ms / 199.5&lt;/td&gt;
+&lt;td&gt;5.471 ms / 182.8&lt;/td&gt;
+&lt;td&gt;5.471 ms / 182.8&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;8,192&lt;/td&gt;
+&lt;td&gt;8.194 ms / 122.0&lt;/td&gt;
+&lt;td&gt;6.417 ms / 155.8&lt;/td&gt;
+&lt;td&gt;5.499 ms / 181.8&lt;/td&gt;
+&lt;td&gt;6.417 ms / 155.8&lt;/td&gt;
+&lt;td&gt;6.417 ms / 155.8&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;16,384&lt;/td&gt;
+&lt;td&gt;11.864 ms / 84.3&lt;/td&gt;
+&lt;td&gt;8.309 ms / 120.4&lt;/td&gt;
+&lt;td&gt;6.474 ms / 154.5&lt;/td&gt;
+&lt;td&gt;8.309 ms / 120.4&lt;/td&gt;
+&lt;td&gt;8.309 ms / 120.3&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;32,768&lt;/td&gt;
+&lt;td&gt;19.203 ms / 52.1&lt;/td&gt;
+&lt;td&gt;12.093 ms / 82.7&lt;/td&gt;
+&lt;td&gt;8.424 ms / 118.7&lt;/td&gt;
+&lt;td&gt;12.093 ms / 82.7&lt;/td&gt;
+&lt;td&gt;12.093 ms / 82.7&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;“Firefly INT8 已发布资源下限”假设 &lt;code&gt;R_launch=R_active&lt;/code&gt;。它不是完整的当前 kernel 精确下限：已发布的 HBM、Tensor Core、SFU 约束都小于等于不可避免的 HBM 项。4K 以下实际图 launch 形状取决于运行时容量。要给出完整的静态数值下限，还需要 NVIDIA 公布（或我们独立实测）精确的 L1/L2 带宽、load/store 发射速率、指令延迟与缓存命中行为。因此严格的当前下界是&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;T_Firefly_INT8 &amp;gt;= max(T_HBM-compulsory,
+                      N_INT8,issued/P_INT8,
+                      N_exp,current/P_SFU,
+                      B_global,current/B_L1L2,
+                      N_LDST,current/P_LDST,
+                      N_barrier/P_barrier,
+                      T_dependency).
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;未知项不能合法地填成“自创的常数”，应该在优化 kernel 时用 Nsight Compute 实测。&lt;/p&gt;
+&lt;h3&gt;6.4 与实测对比&lt;/h3&gt;
+&lt;p&gt;现有固定 seed 的实测：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;~753 past tokens: TPOT 7.32 ms, 136.58 token/s
+8,226 past tokens: TPOT 8.23 ms, 121.45 token/s
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;对 8,226 个 past tokens，插值后 INT8 物理下限与 8,192 行相差不到 0.01 ms。因此：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;physical HBM efficiency ~= 6.42 / 8.23 = 78.0%
+remaining latency budget ~= 1.81 ms/token.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;这并不“远离”严格的 INT8 batch-1 下限——它大约是绝对延迟下限的 1.28 倍。剩余 22% 包括不完美的 HBM 效率、28 个串行层、每层 7 个小 M GEMM、28 组 attention partial/reduce、online-softmax 的 SFU/依赖、4.70 MB 固定全局负载加 split 相关 Q/scratch 流量、CUDA Graph launch、表拷贝、D2H 同步和服务开销。&lt;/p&gt;
+&lt;p&gt;短上下文时物理下限接近 4.53 ms 的 BF16 权重流，而实测 TPOT 是 7.32 ms。那里更大的相对差距指向固定的 GEMV/launch/elementwise/LM-head 低效，而不是 KV 带宽。KV INT4 解决不了短上下文的差距，因为它只减少上下文相关项。&lt;/p&gt;
+&lt;h2&gt;7. 数学推导给出的优化边界&lt;/h2&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;TTFT&lt;/strong&gt;：标量第一 chunk attention 和每线程冗余指数已从优化路径中移除。8K 下实测 TTFT 658.24 ms，最优 DAG 下界 394.44 ms。下一个目标是剩下的 263.81 ms，重点是：用原生 tiled INT8 prefill kernel 替换 INT8 反量化桥接，并把非 attention 的模型时间归因清楚。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;短上下文 TPOT&lt;/strong&gt;：优化或融合 7 个串行 GEMV、norm、RoPE、SwiGLU 与 LM head；保持权重流效率。&lt;code&gt;L=0&lt;/code&gt; 附近 KV 量化几乎没有杠杆。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;8K INT8 TPOT&lt;/strong&gt;：6.42 ms 是绝对物理下限，8.23 ms 是当前实测。可信的下一个目标不低于 6.42 ms；在再改 kernel 之前，先用 Nsight 归因清楚 1.81 ms 的余量。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;长上下文 TPOT&lt;/strong&gt;：INT8 相对 BF16 有实际杠杆。32K 时严格下限是 BF16 19.20 ms、INT8 12.09 ms。假想的 INT4 能把下限降到 8.42 ms，但前提是有高效的打包 INT4 kernel 且精度可接受。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;批处理&lt;/strong&gt;：这些表都是 batch 1。batch 为 &lt;code&gt;B&lt;/code&gt; 时权重字节可以在请求间摊销、GEMM 算术强度上升；聚合 TPS 下界需要单独的调度与 batch 形状推导。单请求延迟和聚合 TPS 是两个不同的目标。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2&gt;8. 哪些无法仅凭静态规格精确确定&lt;/h2&gt;
+&lt;p&gt;一个唯一、精确的“硬件可达到的 TTFT/TPOT”不是模型维度和 GPU 头条规格的纯函数。以下都是运行时或实现变量，不是被省略的代数：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;选中的 cuBLAS kernel、小 M 占用与 epilogue 行为；&lt;/li&gt;
+&lt;li&gt;有效 HBM 事务效率、bank/page 行为；&lt;/li&gt;
+&lt;li&gt;L1/L2 命中率、带宽与 load/store 发射压力；&lt;/li&gt;
+&lt;li&gt;精确超越函数的编译器展开与依赖延迟；&lt;/li&gt;
+&lt;li&gt;寄存器压力、占用、barrier 与指令调度；&lt;/li&gt;
+&lt;li&gt;80 W 默认功耗墙下 SM/显存时钟能否同时维持；&lt;/li&gt;
+&lt;li&gt;CUDA Graph launch、H2D/D2H、host 同步、调度与 gRPC 延迟。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;严格的做法不是编造这些速率。本文给出精确的工作/字节公式、已发布资源下界，以及对未发布资源的符号项；再用实测确定哪个符号项是活跃的。&lt;/p&gt;
+&lt;h2&gt;9. 结论&lt;/h2&gt;
+&lt;p&gt;给一次推理“盖章”需要同时具备三样东西：模型级精确工作量、硬件已发布资源上限、以及诚实标注的实现项。本文用 Qwen3-0.6B + RTX 4060 Laptop 演示了这套方法：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;batch-1 decode 由权重 + KV 的 HBM 读取支配，8K INT8 的绝对下限是 6.42 ms/token，当前实测 8.23 ms（效率 78%），剩余余量需要靠 Nsight 归因而不是盲目重写 kernel；&lt;/li&gt;
+&lt;li&gt;短上下文的差距在固定 GEMV/launch/elementwise，不在 KV 带宽，INT4 救不了短上下文；&lt;/li&gt;
+&lt;li&gt;TTFT 的优化重点已经从“消除冗余指数”转为“原生 tiled INT8 prefill”；&lt;/li&gt;
+&lt;li&gt;无法仅从规格推出唯一精确值，合理的工程做法是：公式 + 已发布下界 + 符号项，然后用实测补齐。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2&gt;参考资料&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;NVIDIA, &lt;em&gt;NVIDIA Ada GPU Architecture&lt;/em&gt;, version 2.1, January 2023：SM 组成、Tensor Core 稠密/稀疏吞吐约定与每 SM 折算。&lt;/li&gt;
+&lt;li&gt;NVIDIA, &lt;em&gt;CUDA C++ Best Practices Guide&lt;/em&gt;，算术指令吞吐表：compute capability 8.x 下每 SM 每时钟 128 个 FP32 结果、64 个 FP32 min/max 结果、16 个近似 SFU 结果、16 个同步运算。&lt;/li&gt;
+&lt;li&gt;本机 CUDA runtime 属性：SM 数、显存总线、显存时钟、L2、shared memory、寄存器与常驻线程上限。&lt;/li&gt;
+&lt;li&gt;Firefly 仓库：&lt;code&gt;qwen3/config.json&lt;/code&gt; 与 safetensors（模型维度与精确参数量）、&lt;code&gt;src/model/qwen/model.cu&lt;/code&gt;（前向阶段顺序）、&lt;code&gt;src/execution/engine.cc&lt;/code&gt;（分块、CUDA Graph decode、拷贝与调度）、&lt;code&gt;src/kernels/attention/paged_attention.cu&lt;/code&gt;（标量 prefill 与 INT8 CuTe partial/split-reduce 算法）、&lt;code&gt;src/kernels/cache/kv_cache.cu&lt;/code&gt;（per-token/per-KV-head 动态 INT8 scale）、&lt;code&gt;src/kernels/transformer/linear.cu&lt;/code&gt;（&lt;code&gt;cublasGemmEx&lt;/code&gt; BF16/FP32 配置）。&lt;/li&gt;
+&lt;/ul&gt;
+</content:encoded></item><item><title>PAC 学习框架</title><link>https://gallnut.github.io/posts/pac_learning/</link><guid isPermaLink="true">https://gallnut.github.io/posts/pac_learning/</guid><pubDate>Sun, 18 Jan 2026 00:00:00 GMT</pubDate><content:encoded>&lt;h1&gt;PAC 学习模型&lt;/h1&gt;
 &lt;p&gt;基本的符号说明为，$\mathcal{X}$ 代表样本或者样本空间，$\mathcal{Y}$ 代表标签或者目标空间，简单起见，假设 $\mathcal{Y} = {0, 1}$ 对应于二分类问题，其他场景的理论分析只需简单推广。$c$ 代表一个概念，定义为 $c := \mathcal{X} \rightarrow \mathcal{Y}$ 。概念类代表所有可能概念的集合，记为 $\mathcal{C}$ 。&lt;/p&gt;
 &lt;p&gt;假设样本来源于某个固定但未知的分布 $\mathcal{D}$，样本间相互独立。学习者考虑一组固定的可能的概念 $\mathcal{H}$ 称为假设集，与 $\mathcal{C}$ 不一定一致。学习者接受一个来源于 $\mathcal{D}$ 的独立同分布的样本 $S = (x_1, \cdots, x_m)$ 以及对应的标签 $(c(x_1), \cdots, c(x_m))$, $c \in \mathcal{C}$ 是一个要学习的目标概念。学习任务就是，利用这些有标签的数据样本 $S$，去选择出一个假设 $h_S \in \mathcal{H}$ 使得该假设针对目标概念 $c$ 达到最小的泛化误差 $R(h)$。&lt;/p&gt;
 &lt;h2&gt;泛化误差&lt;/h2&gt;
